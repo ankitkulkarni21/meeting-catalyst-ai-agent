@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Meeting Catalyst Login</title>
+    <script src="https://cdn.jsdelivr.net/npm/@descope/web-component@latest/dist/index.js"></script>
+</head>
+<body>
+    <h1>Welcome to Meeting Catalyst</h1>
+    <p>Please connect your accounts to get started.</p>
+
+    <descope-wc 
+        project-id="P32MGs2UcvOd7s3fpKrsq5CyjpGB"
+        flow-id="sign-up-or-in">
+    </descope-wc>
+
+    <script>
+    const descopeWc = document.querySelector('descope-wc');
+    if (descopeWc) {
+        descopeWc.addEventListener('success', async (e) => {
+            console.log('Login successful! Validating session with backend...');
+            
+            const sessionToken = e.detail.sessionToken;
+
+            try {
+                const validationResponse = await fetch('http://127.0.0.1:5001/validate-session', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: sessionToken })
+                });
+
+                if (!validationResponse.ok) {
+                    throw new Error('Session validation failed!');
+                }
+
+                const validationResult = await validationResponse.json();
+                const loginId = validationResult.user;
+                console.log(`Session validated for user: ${loginId}`);
+                
+                
+                console.log('Triggering the Meeting Catalyst agent...');
+                
+                const agentResponse = await fetch('http://127.0.0.1:5001/trigger-agent', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ loginId: loginId }) 
+                });
+
+                if (!agentResponse.ok) {
+                    throw new Error('Agent trigger failed!');
+                }
+
+                const agentResult = await agentResponse.json();
+                console.log('Agent response:', agentResult.status);
+                alert('Agent has been successfully triggered! Check your Slack for a briefing if you have an upcoming meeting.');
+
+            } catch (error) {
+                console.error('An error occurred:', error);
+                alert('An error occurred. Check the console for details.');
+            }
+        });
+    }
+</script>
+</body>
+</html>
