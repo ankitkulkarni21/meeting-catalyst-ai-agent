@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Meeting Catalyst Agent</title>
+    <script src="https://cdn.jsdelivr.net/npm/@descope/web-component@latest/dist/index.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f0f2f5;
+        }
+
+        #auth-container {
+            width: 400px;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        #status-message {
+            margin-top: 20px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="auth-container">
+        <h1>Meeting Catalyst</h1>
+        <p>Log in with Google to generate a meeting briefing.</p>
+
+        <descope-wc project-id="P32MGs2UcvOd7s3fpKrsq5CyjpGB" flow-id="sign-up-or-in">
+        </descope-wc>
+
+        <p id="status-message">Waiting for login...</p>
+    </div>
+
+    <script>
+        function updateStatus(message, isError = false) {
+            const statusEl = document.getElementById('status-message');
+            statusEl.textContent = message;
+            statusEl.style.color = isError ? 'red' : 'green';
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const descopeWc = document.querySelector('descope-wc');
+
+            descopeWc.addEventListener('success', (e) => {
+                console.log('Descope success event full details:', e);
+                updateStatus('Authentication successful. Validating session...');
+
+                // Attempt to retrieve the JWT from multiple possible keys
+                const token = e.detail.sessionJwt || e.detail.userJwt || e.detail.token;
+                console.log('Resolved session token:', token);
+
+                if (token) {
+                    validateSessionWithBackend(token);
+                } else {
+                    console.error('No JWT token found in event details.');
+                    updateStatus('No JWT token found. Check console logs.', true);
+                }
+            });
+
+            descopeWc.addEventListener('error', (e) => {
+                console.error('Descope error:', e);
+                updateStatus('Authentication error.', true);
+            });
+        });
+
+        async function validateSessionWithBackend(sessionToken) {
+            console.log('Calling /validate-session with token:', sessionToken);
+            try {
+                const response = await fetch('/validate-session', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: sessionToken })
+                });
+
+                const data = await response.json();
+                if (response.ok) {
+                    console.log('Session validated:', data);
+                    updateStatus('Session validated. Triggering agent...');
+                    await triggerAgent(data.user);
+                } else {
+                    console.error('Session validation failed:', data.error);
+                    updateStatus('Session validation failed.', true);
+                }
+            } catch (error) {
+                console.error('Error validating session:', error);
+                updateStatus('Error validating session.', true);
+            }
+        }
+
+        async function triggerAgent(loginId) {
+            console.log('Triggering agent for loginId:', loginId);
+            try {
+                const response = await fetch('/trigger-agent', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ loginId: loginId })
+                });
+
+                const data = await response.json();
+                if (response.ok) {
+                    console.log('Agent triggered successfully:', data);
+                    updateStatus('Agent successfully triggered!');
+                } else {
+                    console.error('Agent trigger failed:', data.error);
+                    updateStatus('Failed to trigger agent.', true);
+                }
+            } catch (error) {
+                console.error('Error triggering agent:', error);
+                updateStatus('Error triggering agent.', true);
+            }
+        }
+    </script>
+</body>
+
+</html>

@@ -1,91 +1,54 @@
 import os
-from flask import Flask, request, jsonify
+from descope import DescopeClient
+from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
 from dotenv import load_dotenv
 import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 import datetime
 
-
 load_dotenv()
 
 app = Flask(__name__)
+CORS(app)
 
-
+descope_client = DescopeClient(project_id=os.getenv('DESCOPE_PROJECT_ID'))
 DESCOPE_PROJECT_ID = os.getenv('DESCOPE_PROJECT_ID')
 DESCOPE_MANAGEMENT_KEY = os.getenv('DESCOPE_MANAGEMENT_KEY')
 
-# Hugging Face API
-HF_MODEL = "sshleifer/distilbart-cnn-12-6"  
+HF_MODEL = "sshleifer/distilbart-cnn-12-6"
 
 @app.route('/')
 def home():
-    return "Meeting Catalyst Agent is running!"
+    return render_template('index.html')
 
-@app.route('/trigger-agent', methods=['POST'])
-def trigger_agent():
-    user_login_id = "test.user@example.com"
-    
-    tokens = get_tokens_for_user(user_login_id)
-    if not tokens:
-        return jsonify({"error": "Could not retrieve tokens"}), 500
-        
-    google_token = tokens.get('google')
-    if not google_token:
-        return jsonify({"error": "User has not connected Google account"}), 400
+@app.route('/login')
+def login():
+    return render_template('index.html')
 
-    meetings = get_upcoming_meetings(google_token)
-    
-    meeting_briefings = []
-    
-    for event in meetings:
-        meeting_title = event.get('summary', 'No Title')
-        attendees = [att['email'] for att in event.get('attendees', [])] if 'attendees' in event else ['Unknown']
-        
-        document_texts = [
-            "Document 1 content about project updates and strategies.",
-            "Document 2 content about action items and deadlines."
-        ]
-        
-        briefing = generate_briefing(meeting_title, attendees, document_texts)
-        
-        meeting_briefings.append({
-            "title": meeting_title,
-            "briefing": briefing
-        })
-    
-    return jsonify({
-        "status": "Agent triggered successfully",
-        "briefings": meeting_briefings
-    })
 
-def get_tokens_for_user(login_id):
-    """
-    Asks Descope for the external API tokens and user details for a given user.
-    """
-    url = f"https://api.descope.com/v1/mgmt/user/provider/token?loginId={login_id}"
-    headers = {"Authorization": f"Bearer {DESCOPE_MANAGEMENT_KEY}"}
+def get_tokens_for_user(login_id, provider):
+    url = f"https://api.descope.com/v1/mgmt/user/provider/token?loginId={login_id}&provider={provider}"
+    headers = {"Authorization": f"Bearer {DESCOPE_PROJECT_ID}:{DESCOPE_MANAGEMENT_KEY}"}
     
     response = requests.get(url, headers=headers)
     
     if response.status_code == 200:
         data = response.json()
-        provider_data = {}
-        for item in data['providers']:
-            provider_name = item['provider']
-            provider_data[provider_name] = {
-                'accessToken': item['accessToken'],
-                'userId': item.get('providerUserId') 
-            }
-        return provider_data
+        return {
+            'provider': data['provider'],
+            'providerUserId': data['providerUserId'],
+            'accessToken': data['accessToken'],
+            'expiration': data['expiration'],
+            'scopes': data['scopes'],
+            'refreshToken': data.get('refreshToken')
+        }
     else:
-        print(f"Error fetching tokens: {response.text}")
+        print(f"Error fetching tokens for {provider}: {response.text}")
         return None
 
 def get_upcoming_meetings(google_access_token):
-    """
-    Fetch upcoming Google Calendar events using the user's access token.
-    """
     try:
         creds = Credentials(token=google_access_token)
         service = build('calendar', 'v3', credentials=creds)
@@ -105,10 +68,8 @@ def get_upcoming_meetings(google_access_token):
         print(f"Google Calendar API error: {e}")
         return []
 
+
 def generate_briefing(meeting_title, attendees, document_texts):
-    """
-    Generate a meeting briefing using Hugging Face Inference API.
-    """
     full_context = "\n---\n".join(document_texts)
     
     prompt = f"""Meeting Title: {meeting_title}
@@ -137,7 +98,6 @@ Provide a concise briefing summarizing the purpose, key points, action items, an
         )
         
         if response.status_code == 200:
-            print("Hugging Face response:", response.json())
             summary = response.json()[0]['summary_text']
             return summary
         else:
@@ -147,50 +107,48 @@ Provide a concise briefing summarizing the purpose, key points, action items, an
         print(f"Error calling Hugging Face API: {e}")
         return "Error: Could not generate briefing."
 
-if __name__ == '__main__':
-    app.run(debug=True, port=5001)
 
-def validate_descope_session(session_token: str) -> bool:
-    """
-    Validates a Descope session token. Returns the user's details if valid.
-    """
-    api_host = f"https://api.descope.com"
-    project_id = os.getenv('DESCOPE_PROJECT_ID')
-    headers = {
-        'Authorization': f'Bearer {project_id}',
-    }
-    response = requests.post(f'{api_host}/v1/auth/validate', 
-                             headers=headers, 
-                             json={'sessionToken': session_token})
-    
-    if response.status_code == 200:
-        print("Session is valid.")
-        return response.json() 
-    else:
-        print(f"Session invalid: {response.text}")
+def validate_descope_session(session_token: str):
+    try:
+        auth_info = descope_client.validate_session(session_token)
+        print("Session is valid. Auth info:", auth_info)
+        print(f"Available keys in auth_info: {list(auth_info.keys()) if isinstance(auth_info, dict) else 'Not a dict'}")
+        return auth_info
+    except Exception as e:
+        print(f"Session validation failed: {e}")
         return None
+
 
 @app.route('/validate-session', methods=['POST'])
 def validate_session():
+    print('Validate session endpoint hit')
     data = request.get_json()
+    print('Received data:', data)
     session_token = data.get('token')
 
     if not session_token:
-        return jsonify({"error": "Session token is missing"}), 400
+        return jsonify({"error": "Session token is missing"}), 401
 
     user_details = validate_descope_session(session_token)
 
     if user_details:
-        login_id = user_details['token']['loginIds'][0]
-        print(f"Validated user with Login ID: {login_id}")
-        return jsonify({"status": "success", "user": login_id})
+        print(f"Full session validation response: {user_details}")
+        print(f"Available keys: {user_details.keys()}")
+        
+        # Try to access the correct user identifier
+        # The JWT structure shows 'sub' contains the User ID
+        user_id = user_details.get('sub')  # This is the User ID
+        
+        if user_id:
+            print(f"Validated user with User ID: {user_id}")
+            return jsonify({"status": "success", "user": user_id})
+        else:
+            return jsonify({"error": "Could not extract user ID"}), 401
     else:
         return jsonify({"error": "Invalid session"}), 401
 
+
 def search_drive_and_get_content(access_token, query):
-    """
-    Searches Google Drive for files and returns their content.
-    """
     all_content = []
     try:
         creds = Credentials(token=access_token)
@@ -208,7 +166,6 @@ def search_drive_and_get_content(access_token, query):
             return []
 
         for item in files:
-            print(f"Found file: {item['name']}")
             file_id = item['id']
             mime_type = item['mimeType']
             
@@ -227,9 +184,6 @@ def search_drive_and_get_content(access_token, query):
 
 
 def search_notion_and_get_content(access_token, query):
-    """
-    Searches Notion and returns the content of found pages.
-    """
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
@@ -245,50 +199,43 @@ def search_notion_and_get_content(access_token, query):
         
     results = response.json().get('results', [])
     page_titles = [page.get('properties', {}).get('title', {}).get('title', [{}])[0].get('plain_text', 'Untitled') for page in results]
-    print(f"Found Notion pages: {page_titles}")
 
     return page_titles
 
+
 def run_catalyst_for_user(login_id):
-    """
-    The main orchestrator for the Meeting Catalyst agent.
-    """
     print(f"--- Running Catalyst Agent for user: {login_id} ---")
 
-    tokens = get_tokens_for_user(login_id)
-    if not tokens:
-        print("Could not get tokens. Aborting.")
-        return
-    
-    google_token = tokens.get('google')
-    notion_token = tokens.get('notion')
-    slack_token = tokens.get('slack')
+    # Get tokens for each provider separately
+    google_token_data = get_tokens_for_user(login_id, 'google')
+    notion_token_data = get_tokens_for_user(login_id, 'notion')
+    slack_token_data = get_tokens_for_user(login_id, 'slack')
 
-
-    if not google_token:
+    if not google_token_data:
         print("User has not connected Google. Cannot get meetings.")
         return
         
+    google_token = google_token_data['accessToken']
     meetings = get_upcoming_meetings(google_token)
+    
     if not meetings:
         print("No upcoming meetings to process.")
         return
 
-
     next_meeting = meetings[0]
     title = next_meeting.get('summary', 'No Title')
     attendees = [attendee.get('email') for attendee in next_meeting.get('attendees', [])]
-    print(f"\nProcessing meeting: '{title}'")
-
 
     all_context_docs = []
-    search_query = title.split(' ')[0] 
+    search_query = title.split(' ')[0]
 
-    if google_token:
-        drive_content = search_drive_and_get_content(google_token, search_query)
-        all_context_docs.extend(drive_content)
+    # Use Google Drive
+    drive_content = search_drive_and_get_content(google_token, search_query)
+    all_context_docs.extend(drive_content)
 
-    if notion_token:
+    # Use Notion if available
+    if notion_token_data:
+        notion_token = notion_token_data['accessToken']
         notion_content = search_notion_and_get_content(notion_token, search_query)
         all_context_docs.extend(notion_content)
     
@@ -296,67 +243,49 @@ def run_catalyst_for_user(login_id):
         print("Found no relevant documents. Nothing to summarize.")
         return
 
-
     print("Generating AI summary...")
     briefing = generate_briefing(title, attendees, all_context_docs)
+    
     print("--- BRIEFING ---")
     print(briefing)
     print("----------------")
     
-
-    print("Generating AI summary...")
-    briefing = generate_briefing(title, attendees, all_context_docs)
-    print("--- BRIEFING ---")
-    print(briefing)
-    print("----------------")
-    
-
-    if tokens.get('slack'):
-        slack_data = tokens['slack']
-        slack_token = slack_data.get('accessToken')
-        slack_user_id = slack_data.get('userId') 
-        
-        if slack_token and slack_user_id:
-            send_slack_message(slack_token, slack_user_id, briefing)
-        else:
-            print("Slack token or User ID is missing.")
+    # Send to Slack if available
+    if slack_token_data:
+        slack_token = slack_token_data['accessToken']
+        slack_user_id = slack_token_data['providerUserId']
+        send_slack_message(slack_token, slack_user_id, briefing)
     else:
         print("Slack is not connected for this user.")
 
-    print(f"--- Agent run for {login_id} complete. ---")
-
-    
     print(f"--- Agent run for {login_id} complete. ---")
 
 
 @app.route('/trigger-agent', methods=['POST'])
 def trigger_agent():
     data = request.get_json()
+    print('Trigger agent called with:', data)
+
     login_id = data.get('loginId')
     if not login_id:
         return jsonify({"error": "loginId is required"}), 400
         
     run_catalyst_for_user(login_id)
-    return jsonify({"status": "Agent run started for " + login_id})
+    return jsonify({"status": f"Agent run started for {login_id}"})
 
 
 def send_slack_message(access_token, user_id, message_text):
-    """
-    Sends a message to a user in Slack as a direct message.
-    """
     if not user_id:
-        print("❌ Slack User ID is missing. Cannot send DM.")
+        print("Slack User ID is missing. Cannot send DM.")
         return
 
-    print(f"✉️ Sending Slack message to user {user_id}...")
-    
     url = "https://slack.com/api/chat.postMessage"
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json"
     }
     payload = {
-        "channel": user_id, 
+        "channel": user_id,
         "text": message_text,
         "unfurl_links": False,
         "unfurl_media": False
@@ -365,6 +294,6 @@ def send_slack_message(access_token, user_id, message_text):
     response = requests.post(url, headers=headers, json=payload)
     
     if response.json().get('ok'):
-        print("✅ Slack message sent successfully!")
+        print("Slack message sent successfully!")
     else:
-        print(f" Error sending Slack message: {response.json().get('error')}")
+        print(f"Error sending Slack message: {response.json().get('error')}")
